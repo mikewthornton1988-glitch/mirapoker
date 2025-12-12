@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Mirapoker Admin Console</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        body {
+            background: #0b2e13;
+            color: white;
+            font-family: Arial, sans-serif;
+            padding: 10px;
+        }
+
+        h1 {
+            text-align: center;
+        }
+
+        #tables {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .table-card {
+            padding: 10px;
+            background: #12381e;
+            border: 1px solid #3b7550;
+            border-radius: 8px;
+        }
+
+        .player-info {
+            font-size: 14px;
+            margin-left: 15px;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>Mirapoker Admin Console</h1>
+
+    <div id="tables">
+        Loading tables…
+    </div>
+
+    <script>
+        const socket = new WebSocket(`wss://${location.hostname}`);
+
+        socket.onopen = () => {
+            socket.send(JSON.stringify({ type: "admin_join" }));
+        };
+
+        socket.onmessage = (event) => {
+            let data = JSON.parse(event.data);
+
+            if (data.type === "admin_update") {
+                renderTables(data.tables);
+            }
+        };
+
+        function renderTables(tables) {
+            const container = document.getElementById("tables");
+            container.innerHTML = "";
+
+            Object.keys(tables).forEach((tableId) => {
+                const t = tables[tableId];
+                let card = document.createElement("div");
+                card.className = "table-card";
+
+                card.innerHTML = `
+                    <h2>Table ${tableId}</h2>
+                    <p>Pot: $${t.pot}</p>
+                    <p>Community cards: ${t.community.join(", ")}</p>
+                    <h3>Players:</h3>
+                `;
+
+                t.players.forEach((p) => {
+                    let pDiv = document.createElement("div");
+                    pDiv.className = "player-info";
+
+                    pDiv.innerHTML = `
+                        <strong>${p.name}</strong>  
+                        | Chips: $${p.chips}  
+                        | Bet: $${p.bet}  
+                        | Cards: ${p.cards.join(", ")}  
+                        | Status: ${p.status}
+                    `;
+
+                    card.appendChild(pDiv);
+                });
+
+                container.appendChild(card);
+            });
+        }
+    </script>
+</body>
+</html>
