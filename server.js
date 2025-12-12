@@ -1,187 +1,103 @@
 const express = require("express");
 const http = require("http");
-const path = require("path");
 const WebSocket = require("ws");
-const cors = require("cors");
-const { v4: uuidv4 } = require("uuid");
+const path = require("path");
 
 const app = express();
-app.use(cors());
-app.use(express.json());
-
-// -----------------------------
-// SERVE STATIC UI FILES
-// -----------------------------
-app.use(express.static(path.join(__dirname, "client")));
-
-// -----------------------------
-// TABLE CONFIG
-// -----------------------------
-const TABLE_COUNT = 5;
-const SEATS_PER_TABLE = 6;
-
-let tables = {};
-for (let t = 1; t <= TABLE_COUNT; t++) {
-    tables[t] = {
-        players: {},  // seat -> { id, ws, name, stack, cards, isAdmin }
-        spectators: [], // admin-mode watchers
-        gameState: {},  // flop, turn, river, pot, actions
-        pendingBuyIns: []
-    };
-}
-
-// -----------------------------
-// HTTP ROUTES
-// -----------------------------
-
-// Player table join
-app.get("/table/:id", (req, res) => {
-    res.sendFile(path.join(__dirname, "client", "table.html"));
-});
-
-// Admin observer mode
-app.get("/admin/:id", (req, res) => {
-    res.sendFile(path.join(__dirname, "client", "admin.html"));
-});
-
-// Health check (Render)
-app.get("/", (req, res) => {
-    res.send("Mirapoker server running.");
-});
-
-// -----------------------------
-// WEBSOCKET SERVER
-// -----------------------------
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
-// broadcast state to everyone at a table
-function broadcastTable(tableId) {
-    const table = tables[tableId];
-    const message = JSON.stringify({
-        type: "update",
-        gameState: table.gameState,
-        players: Object.fromEntries(
-            Object.entries(table.players).map(([seat, p]) => [
-                seat,
-                { name: p.name, stack: p.stack, cards: p.isAdmin ? p.cards : undefined }
-            ])
-        )
-    });
+app.use(express.static(path.join(__dirname, "client")));
 
-    for (const p of Object.values(table.players)) {
-        if (p.ws && p.ws.readyState === WebSocket.OPEN) p.ws.send(message);
-    }
-    for (const s of table.spectators) {
-        if (s.readyState === WebSocket.OPEN) s.send(message);
-    }
+let tables = {
+    1: { players: {}, board: [], deck: [] },
+    2: { players: {}, board: [], deck: [] },
+    3: { players: {}, board: [], deck: [] }
+};
+
+function newDeck() {
+    const suits = ["H", "D", "C", "S"];
+    const ranks = ["2","3","4","5","6","7","8","9","10","J","Q","K","A"];
+    let d = [];
+    suits.forEach(s => ranks.forEach(r => d.push(r + s)));
+    return d.sort(() => Math.random() - 0.5);
 }
 
-wss.on("connection", (ws, req) => {
-    const params = new URLSearchParams(req.url.replace("/?", ""));
-    const mode = params.get("mode"); // player or admin
-    const tableId = parseInt(params.get("table"));
-    const seat = params.get("seat");
-    const name = params.get("name") || "Player";
+function dealCard(deck) {
+    return deck.pop();
+}
 
-    if (!tables[tableId]) {
-        ws.send(JSON.stringify({ error: "Invalid table" }));
-        ws.close();
-        return;
-    }
-
-    const table = tables[tableId];
-
-    // -----------------------
-    // ADMIN OBSERVER
-    // -----------------------
-    if (mode === "admin") {
-        ws.isAdmin = true;
-        table.spectators.push(ws);
-
-        ws.send(JSON.stringify({ type: "admin_connected", tableId }));
-        broadcastTable(tableId);
-
-        ws.on("close", () => {
-            table.spectators = table.spectators.filter(s => s !== ws);
-        });
-        return;
-    }
-
-    // -----------------------
-    // PLAYER CONNECTION
-    // -----------------------
-    if (!seat || seat < 1 || seat > SEATS_PER_TABLE) {
-        ws.send(JSON.stringify({ error: "Invalid seat" }));
-        ws.close();
-        return;
-    }
-
-    if (table.players[seat]) {
-        ws.send(JSON.stringify({ error: "Seat taken" }));
-        ws.close();
-        return;
-    }
-
-    const id = uuidv4();
-    table.players[seat] = {
-        id,
-        ws,
-        name,
-        stack: 500,  // default stack; Astrea will update this
-        cards: [],
-        isAdmin: false
+function sendState(tableId) {
+    const t = tables[tableId];
+    const state = {
+        type: "state",
+        board: t.board,
+        players: Object.values(t.players).map(p => ({
+            id: p.id,
+            hand: p.hand,
+            chips: p.chips
+        }))
     };
 
-    ws.send(JSON.stringify({
-        type: "joined",
-        tableId,
-        seat,
-        name,
-        stack: table.players[seat].stack
-    }));
+    Object.values(t.players).forEach(p => {
+        p.ws.send(JSON.stringify(state));
+    });
+}
 
-    broadcastTable(tableId);
+wss.on("connection", ws => {
+    let currentTable = null;
+    let playerId = Math.random().toString(36).substring(2, 10);
 
-    // disconnect logic
-    ws.on("close", () => {
-        delete table.players[seat];
-        broadcastTable(tableId);
+    ws.on("message", data => {
+        let msg = JSON.parse(data);
+
+        if (msg.type === "join_table") {
+            let tableId = msg.table;
+            currentTable = tableId;
+
+            let t = tables[tableId];
+
+            if (!t.deck.length) {
+                t.deck = newDeck();
+                t.board = [];
+            }
+
+            t.players[playerId] = {
+                id: playerId,
+                ws: ws,
+                hand: [dealCard(t.deck), dealCard(t.deck)],
+                chips: 1000
+            };
+
+            ws.send(JSON.stringify({ type: "welcome", playerId }));
+            sendState(tableId);
+        }
+
+        if (msg.type === "action") {
+            let t = tables[currentTable];
+
+            if (!t) return;
+
+            if (t.board.length < 5) {
+                t.board.push(dealCard(t.deck));
+            }
+
+            sendState(currentTable);
+        }
     });
 
-    // receive messages
-    ws.on("message", (msg) => {
-        try {
-            const data = JSON.parse(msg);
-            if (data.type === "action") {
-                // player bet/check/fold here
-                table.gameState.lastAction = {
-                    seat,
-                    action: data.action,
-                    amount: data.amount || 0
-                };
-
-                broadcastTable(tableId);
-            }
-
-            if (data.type === "setCards" && ws.isAdmin) {
-                // Admin can reveal cards
-                if (table.players[data.seat]) {
-                    table.players[data.seat].cards = data.cards;
-                }
-                broadcastTable(tableId);
-            }
-
-        } catch (e) {
-            console.log("Bad WS message", e);
+    ws.on("close", () => {
+        if (currentTable && tables[currentTable].players[playerId]) {
+            delete tables[currentTable].players[playerId];
+            sendState(currentTable);
         }
     });
 });
 
-// -----------------------------
-// START SERVER
-// -----------------------------
-const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-    console.log("Mirapoker running on port " + PORT);
+app.get("/", (req, res) => {
+    res.sendFile(path.join(__dirname, "client", "table.html"));
 });
+
+server.listen(process.env.PORT || 3000, () =>
+    console.log("Mirapoker server running.")
+);
