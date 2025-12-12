@@ -1,7 +1,7 @@
 {
   "name": "mirapoker",
   "version": "1.0.0",
-  "description": "Mirapoker online Texas Hold'em server",
+  "description": "Mirapoker online Texas Hold'em",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
